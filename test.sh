@@ -9,7 +9,7 @@ assert() {
 
   # 运行程序，传入期待值，将生成结果写入tmp.s汇编文件。
   # 如果运行不成功，则会执行exit退出。成功时会短路exit操作
-  ./rvcc "$input" > tmp.s || exit
+  ./rvcc "$input" >tmp.s || exit
   # 编译rvcc产生的汇编文件
   # gcc -o tmp tmp.s
   $RISCV/bin/riscv64-unknown-linux-gnu-gcc -static -o tmp tmp.s
@@ -41,6 +41,12 @@ assert 34 '12-34+56'
 
 # [3] 支持空格
 assert 41 ' 12 + 34 - 5     '
+
+# [5] 支持* / ()运算符
+assert 47 '5+6*7'
+assert 15 '5*(9-6)'
+assert 17 '1-8/(2*2)+3 * 6'
+assert 72 '1-8/(2*2)+3*6+5*(7-2)*2+5'
 
 # 如果运行正常未提前退出，程序将显示OK
 echo OK
