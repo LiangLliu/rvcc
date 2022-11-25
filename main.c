@@ -1,10 +1,12 @@
-#include <stdio.h>
-#include <stdlib.h>
+#include <assert.h>
 #include <ctype.h>
 #include <stdarg.h>
 #include <stdbool.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
-#include <assert.h>
+
+// 终结符分析，词法分析
 
 // 为每个终结符都设置种类来表示
 typedef enum {
@@ -23,7 +25,26 @@ struct Token {
     int Len;        // 长度
 };
 
+// 输入的字符串
 static char *CurrentInput;
+
+// 输出错误信息
+// static文件内可以访问的函数
+// Fmt为传入的字符串， ... 为可变参数，表示Fmt后面所有的参数
+static void error(char *Fmt, ...) {
+    // 定义一个va_list变量
+    va_list VA;
+    // VA获取Fmt后面的所有参数
+    va_start(VA, Fmt);
+    // vfprintf可以输出va_list类型的参数
+    vfprintf(stderr, Fmt, VA);
+    // 在结尾加上一个换行符
+    fprintf(stderr, "\n");
+    // 清除VA
+    va_end(VA);
+    // 终止程序
+    exit(1);
+}
 
 // 输出错误出现的位置
 static void verrorAt(char *Loc, char *Fmt, va_list VA) {
@@ -54,24 +75,6 @@ static void errorTok(Token *Tok, char *Fmt, ...) {
     va_list VA;
     va_start(VA, Fmt);
     verrorAt(Tok->Loc, Fmt, VA);
-    exit(1);
-}
-
-// 输出错误信息
-// static文件内可以访问的函数
-// Fmt为传入的字符串， ... 为可变参数，表示Fmt后面所有的参数
-static void error(char *Fmt, ...) {
-    // 定义一个va_list变量
-    va_list VA;
-    // VA获取Fmt后面的所有参数
-    va_start(VA, Fmt);
-    // vfprintf可以输出va_list类型的参数
-    vfprintf(stderr, Fmt, VA);
-    // 在结尾加上一个换行符
-    fprintf(stderr, "\n");
-    // 清除VA
-    va_end(VA);
-    // 终止程序
     exit(1);
 }
 
@@ -110,7 +113,6 @@ static Token *newToken(TokenKind Kind, char *Start, char *End) {
 // 终结符解析
 static Token *tokenize() {
     char *P = CurrentInput;
-
     Token Head = {};
     Token *Cur = &Head;
 
@@ -162,6 +164,7 @@ typedef enum {
     ND_SUB, // -
     ND_MUL, // *
     ND_DIV, // /
+    ND_NEG, // 负号-
     ND_NUM, // 整形
 } NodeKind;
 
@@ -181,6 +184,13 @@ static Node *newNode(NodeKind Kind) {
     return Nd;
 }
 
+// 新建一个单叉树
+static Node *newUnary(NodeKind Kind, Node *Expr) {
+    Node *Nd = newNode(Kind);
+    Nd->LHS = Expr;
+    return Nd;
+}
+
 // 新建一个二叉树节点
 static Node *newBinary(NodeKind Kind, Node *LHS, Node *RHS) {
     Node *Nd = newNode(Kind);
@@ -197,11 +207,14 @@ static Node *newNum(int Val) {
 }
 
 // expr = mul ("+" mul | "-" mul)*
-// mul = primary ("*" primary | "/" primary)*
+// mul = unary ("*" unary | "/" unary)*
+// unary = ("+" | "-") unary | primary
 // primary = "(" expr ")" | num
 static Node *expr(Token **Rest, Token *Tok);
 
 static Node *mul(Token **Rest, Token *Tok);
+
+static Node *unary(Token **Rest, Token *Tok);
 
 static Node *primary(Token **Rest, Token *Tok);
 
@@ -231,28 +244,43 @@ static Node *expr(Token **Rest, Token *Tok) {
 }
 
 // 解析乘除
-// mul = primary ("*" primary | "/" primary)*
+// mul = unary ("*" unary | "/" unary)*
 static Node *mul(Token **Rest, Token *Tok) {
-    // primary
-    Node *Nd = primary(&Tok, Tok);
+    // unary
+    Node *Nd = unary(&Tok, Tok);
 
-    // ("*" primary | "/" primary)*
+    // ("*" unary | "/" unary)*
     while (true) {
-        // "*" primary
+        // "*" unary
         if (equal(Tok, "*")) {
-            Nd = newBinary(ND_MUL, Nd, primary(&Tok, Tok->Next));
+            Nd = newBinary(ND_MUL, Nd, unary(&Tok, Tok->Next));
             continue;
         }
 
-        // "/" primary
+        // "/" unary
         if (equal(Tok, "/")) {
-            Nd = newBinary(ND_DIV, Nd, primary(&Tok, Tok->Next));
+            Nd = newBinary(ND_DIV, Nd, unary(&Tok, Tok->Next));
             continue;
         }
 
         *Rest = Tok;
         return Nd;
     }
+}
+
+// 解析一元运算
+// unary = ("+" | "-") unary | primary
+static Node *unary(Token **Rest, Token *Tok) {
+    // "+" unary
+    if (equal(Tok, "+"))
+        return unary(Rest, Tok->Next);
+
+    // "-" unary
+    if (equal(Tok, "-"))
+        return newUnary(ND_NEG, unary(Rest, Tok->Next));
+
+    // primary
+    return primary(Rest, Tok);
 }
 
 // 解析括号、数字
@@ -300,10 +328,20 @@ static void pop(char *Reg) {
 
 // 生成表达式
 static void genExpr(Node *Nd) {
-    // 加载数字到a0
-    if (Nd->Kind == ND_NUM) {
-        printf("  li a0, %d\n", Nd->Val);
-        return;
+    // 生成各个根节点
+    switch (Nd->Kind) {
+        // 加载数字到a0
+        case ND_NUM:
+            printf("  li a0, %d\n", Nd->Val);
+            return;
+            // 对寄存器取反
+        case ND_NEG:
+            genExpr(Nd->LHS);
+            // neg a0, a0是sub a0, x0, a0的别名, 即a0=0-a0
+            printf("  neg a0, a0\n");
+            return;
+        default:
+            break;
     }
 
     // 递归到最右节点
@@ -337,9 +375,9 @@ static void genExpr(Node *Nd) {
 }
 
 int main(int Argc, char **Argv) {
-
-    // 异常处理，提示参数数量不对。
+    // 判断传入程序的参数是否为2个，Argv[0]为程序名称，Argv[1]为传入的第一个参数
     if (Argc != 2) {
+        // 异常处理，提示参数数量不对。
         // fprintf，格式化文件输出，往文件内写入字符串
         // stderr，异常文件（Linux一切皆文件），用于往屏幕显示异常信息
         // %s，字符串
@@ -365,6 +403,7 @@ int main(int Argc, char **Argv) {
     genExpr(Node);
 
     // ret为jalr x0, x1, 0别名指令，用于返回子程序
+    // 返回的为a0的值
     printf("  ret\n");
 
     // 如果栈未清空则报错
